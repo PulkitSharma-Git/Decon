@@ -1,36 +1,1480 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+"use client";
+import { useState, useRef, useEffect, type CSSProperties, type KeyboardEvent, type HTMLAttributes, type ReactNode } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
+import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism";
 
-## Getting Started
+const BASE_URL = "https://langgraph-8us5.onrender.com";
 
-First, run the development server:
+type Mode = "chat" | "document" | "research";
+type TraceStep = "plan" | "process" | "output";
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+interface Trace {
+  step: TraceStep;
+  trace: string;
+}
+
+interface Message {
+  id: number;
+  role: "user" | "assistant";
+  content: string;
+  time: string;
+  mode?: Mode;
+  traces: Trace[];
+  sources: string[] | null; // ✅ FIXED
+}
+
+// ─── Utility ────────────────────────────────────────────────────────────────
+function timestamp() {
+  return new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+// ─── Markdown renderer ──────────────────────────────────────────────────────
+function MDContent({ children }: { children: string }) {
+  return (
+    <ReactMarkdown
+      remarkPlugins={[remarkGfm]}
+      components={{
+        code({
+          inline,
+          className,
+          children,
+          ...props
+        }: HTMLAttributes<HTMLElement> & { inline?: boolean; className?: string }) {
+          const match = /language-(\w+)/.exec(className || "");
+          return !inline && match ? (
+            <SyntaxHighlighter
+              style={oneDark as Record<string, CSSProperties>}
+              language={match[1]}
+              PreTag="div"
+            >
+              {String(children).replace(/\n$/, "")}
+            </SyntaxHighlighter>
+          ) : (
+            <code
+              style={{
+                background: "rgba(255,255,255,0.07)",
+                padding: "2px 6px",
+                borderRadius: 5,
+                fontFamily: "monospace",
+                fontSize: "0.88em",
+                color: "rgba(255,255,255,0.85)",
+              }}
+              {...props}
+            >
+              {children}
+            </code>
+          );
+        },
+        p: ({ children }) => <p style={{ margin: "0 0 8px", lineHeight: 1.65 }}>{children}</p>,
+        ul: ({ children }) => <ul style={{ paddingLeft: 18, margin: "4px 0 8px" }}>{children}</ul>,
+        ol: ({ children }) => <ol style={{ paddingLeft: 18, margin: "4px 0 8px" }}>{children}</ol>,
+        li: ({ children }) => <li style={{ marginBottom: 3 }}>{children}</li>,
+        h1: ({ children }) => <h1 style={{ fontSize: "1.25em", fontWeight: 600, margin: "12px 0 6px", color: "rgba(255,255,255,0.92)" }}>{children}</h1>,
+        h2: ({ children }) => <h2 style={{ fontSize: "1.1em", fontWeight: 600, margin: "10px 0 5px", color: "rgba(255,255,255,0.88)" }}>{children}</h2>,
+        h3: ({ children }) => <h3 style={{ fontSize: "1em", fontWeight: 600, margin: "8px 0 4px", color: "rgba(255,255,255,0.85)" }}>{children}</h3>,
+        blockquote: ({ children }) => (
+          <blockquote style={{ borderLeft: "2px solid rgba(255,255,255,0.15)", paddingLeft: 12, margin: "6px 0", color: "rgba(255,255,255,0.55)", fontStyle: "italic" }}>
+            {children}
+          </blockquote>
+        ),
+        a: ({ href, children }) => (
+          <a href={href} target="_blank" rel="noreferrer" style={{ color: "rgba(180,160,255,0.85)", textDecoration: "underline" }}>
+            {children}
+          </a>
+        ),
+      }}
+    >
+      {children}
+    </ReactMarkdown>
+  );
+}
+
+// ─── Research trace bubble ───────────────────────────────────────────────────
+function TraceBubble({ step, trace }: { step: TraceStep; trace: string }) {
+  const [open, setOpen] = useState(step === "output");
+
+  const stepMeta: Record<TraceStep, { label: string; color: string; dot: string }> = {
+    plan: { label: "Planning", color: "rgba(110,70,240,0.25)", dot: "rgba(150,110,255,0.9)" },
+    process: { label: "Processing", color: "rgba(60,140,255,0.18)", dot: "rgba(100,170,255,0.9)" },
+    output: { label: "Output", color: "rgba(60,200,120,0.18)", dot: "rgba(80,220,140,0.9)" },
+  };
+  const meta = stepMeta[step] || stepMeta.process;
+
+  return (
+    <div style={{ marginBottom: 6, borderRadius: 10, overflow: "hidden", border: "1px solid rgba(255,255,255,0.06)", background: meta.color, backdropFilter: "blur(8px)" }}>
+      <button
+        onClick={() => setOpen((v) => !v)}
+        style={{
+          width: "100%", display: "flex", alignItems: "center", gap: 8,
+          padding: "7px 12px", background: "transparent", border: "none",
+          cursor: "pointer", color: "rgba(255,255,255,0.7)", fontSize: 12, fontWeight: 500, fontFamily: "inherit",
+        }}
+      >
+        <span style={{ width: 6, height: 6, borderRadius: "50%", background: meta.dot, flexShrink: 0 }} />
+        <span style={{ textTransform: "uppercase", letterSpacing: "0.6px" }}>{meta.label}</span>
+        <span style={{ marginLeft: "auto", opacity: 0.5, fontSize: 10, transition: "transform 0.2s", display: "inline-block", transform: open ? "rotate(180deg)" : "none" }}>▼</span>
+      </button>
+      {open && (
+        <div style={{ padding: "0 12px 10px", fontSize: 13, color: "rgba(255,255,255,0.72)", lineHeight: 1.6 }}>
+          <MDContent>{trace}</MDContent>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Message bubble ──────────────────────────────────────────────────────────
+function MessageBubble({ msg }: { msg: Message }) {
+  const isUser = msg.role === "user";
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", alignItems: isUser ? "flex-end" : "flex-start", marginBottom: 18 }}>
+      {/* Role label */}
+      <div style={{ fontSize: 10, color: "rgba(255,255,255,0.25)", marginBottom: 5, letterSpacing: "0.5px", textTransform: "uppercase", paddingLeft: isUser ? 0 : 4, paddingRight: isUser ? 4 : 0 }}>
+        {isUser ? "You" : "Assistant"} · {msg.time}
+      </div>
+
+      {/* Bubble */}
+      <div
+        style={{
+          maxWidth: "82%",
+          padding: "12px 16px",
+          borderRadius: isUser ? "18px 18px 4px 18px" : "18px 18px 18px 4px",
+          background: isUser ? "rgba(255,255,255,0.09)" : "rgba(255,255,255,0.042)",
+          border: isUser ? "1px solid rgba(255,255,255,0.1)" : "1px solid rgba(255,255,255,0.058)",
+          boxShadow: isUser ? "0 4px 20px rgba(0,0,0,0.4)" : "0 4px 20px rgba(0,0,0,0.3)",
+          fontSize: 14,
+          color: "rgba(255,255,255,0.88)",
+          lineHeight: 1.65,
+          backdropFilter: "blur(10px)",
+          fontWeight: 400,
+        }}
+      >
+        {msg.role === "user" ? (
+          <span style={{ whiteSpace: "pre-wrap" }}>{msg.content}</span>
+        ) : (
+          <>
+            {/* Research traces */}
+            {msg.traces && msg.traces.length > 0 && (
+              <div style={{ marginBottom: 14 }}>
+                {msg.traces.map((t, i) => (
+                  <TraceBubble key={i} step={t.step} trace={t.trace} />
+                ))}
+              </div>
+            )}
+
+            {/* Main answer */}
+            {msg.content ? (
+              <MDContent>{msg.content}</MDContent>
+            ) : (
+              <LoadingDots />
+            )}
+
+            {/* Sources */}
+            {msg.sources && msg.sources.length > 0 && (
+  <div
+    style={{
+      marginTop: 12,
+      paddingTop: 10,
+      borderTop: "1px solid rgba(255,255,255,0.07)",
+      fontSize: 12,
+      color: "rgba(255,255,255,0.4)",
+    }}
+  >
+    <span
+      style={{
+        fontWeight: 500,
+        color: "rgba(255,255,255,0.55)",
+        display: "block",
+        marginBottom: 6,
+      }}
+    >
+      Sources
+    </span>
+
+    <ul style={{ paddingLeft: 16, margin: 0 }}>
+      {msg.sources.map((src, i) => (
+        <li key={i} style={{ marginBottom: 4 }}>
+          <a
+            href={src}
+            target="_blank"
+            rel="noreferrer"
+            style={{
+              color: "rgba(180,160,255,0.85)",
+              textDecoration: "underline",
+              wordBreak: "break-all",
+            }}
+          >
+            {src}
+          </a>
+        </li>
+      ))}
+    </ul>
+  </div>
+)}
+
+            {/* Mode badge */}
+            {msg.mode && (
+              <div style={{ marginTop: 8, display: "flex", gap: 6 }}>
+                <ModeBadge mode={msg.mode} small />
+              </div>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function LoadingDots() {
+  return (
+    <div style={{ display: "flex", gap: 5, alignItems: "center", padding: "2px 0" }}>
+      {[0, 1, 2].map((i) => (
+        <span
+          key={i}
+          style={{
+            width: 6, height: 6, borderRadius: "50%",
+            background: "rgba(255,255,255,0.4)",
+            animation: `dotPulse 1.2s ease-in-out ${i * 0.2}s infinite`,
+          }}
+        />
+      ))}
+    </div>
+  );
+}
+
+function ModeBadge({ mode, small }: { mode: Mode; small?: boolean }) {
+  const colors: Record<Mode, string> = {
+    chat: "rgba(255,255,255,0.12)",
+    document: "rgba(110,70,240,0.25)",
+    research: "rgba(60,140,255,0.22)",
+  };
+  const labels: Record<Mode, string> = {
+    chat: "Chat",
+    document: "Document",
+    research: "Research",
+  };
+  return (
+    <span style={{
+      padding: small ? "2px 8px" : "4px 12px",
+      borderRadius: 20,
+      fontSize: small ? 10 : 12,
+      fontWeight: 500,
+      letterSpacing: "0.4px",
+      background: colors[mode] || colors.chat,
+      color: "rgba(255,255,255,0.6)",
+      border: "1px solid rgba(255,255,255,0.08)",
+      textTransform: "uppercase",
+    }}>
+      {labels[mode]}
+    </span>
+  );
+}
+
+// ─── ChatArea ────────────────────────────────────────────────────────────────
+function ChatArea({
+  messages,
+  chatRef,
+}: {
+  messages: Message[];
+  chatRef: React.RefObject<HTMLDivElement | null>;
+}) {
+  useEffect(() => {
+    if (chatRef.current) {
+      chatRef.current.scrollTop = chatRef.current.scrollHeight;
+    }
+  }, [messages]);
+
+  if (messages.length === 0) return null;
+
+  return (
+    <div
+      ref={chatRef}
+      style={{
+        position: "fixed",
+        top: 0,
+        left: "50%",
+        transform: "translateX(-50%)",
+        width: "62%",
+        maxWidth: 780,
+        minWidth: 320,
+        height: "calc(100vh - 180px)",
+        overflowY: "auto",
+        padding: "40px 8px 24px",
+        scrollbarWidth: "none",
+      }}
+    >
+      {messages.map((msg) => (
+        <MessageBubble key={msg.id} msg={msg} />
+      ))}
+    </div>
+  );
+}
+
+// ─── Mode selector ───────────────────────────────────────────────────────────
+function ModeSelector({
+  mode,
+  onChange,
+  disabled,
+}: {
+  mode: Mode;
+  onChange: (mode: Mode) => void;
+  disabled?: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement | null>(null);
+
+  const modes: Array<{ id: Mode; icon: string; label: string; desc: string }> = [
+    { id: "chat", icon: "💬", label: "Chat", desc: "Fast conversational answers" },
+    { id: "document", icon: "📄", label: "Document", desc: "Long-form structured content" },
+    { id: "research", icon: "🔬", label: "Research", desc: "Multi-step reasoning + sources" },
+  ];
+
+  useEffect(() => {
+    function handleClick(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    }
+    document.addEventListener("mousedown", handleClick);
+    return () => document.removeEventListener("mousedown", handleClick);
+  }, []);
+
+  const current = modes.find((m) => m.id === mode) ?? modes[0];
+
+  return (
+    <div ref={ref} style={{ position: "relative" }}>
+      <button
+        onClick={() => !disabled && setOpen((v) => !v)}
+        disabled={disabled}
+        style={{
+          display: "flex", alignItems: "center", gap: 6,
+          padding: "6px 12px", borderRadius: 22,
+          background: open ? "rgba(255,255,255,0.1)" : "rgba(255,255,255,0.055)",
+          border: "1px solid rgba(255,255,255,0.09)",
+          color: "rgba(255,255,255,0.7)", fontSize: 13, fontWeight: 500,
+          cursor: disabled ? "default" : "pointer", fontFamily: "inherit",
+          transition: "all 0.2s",
+        }}
+      >
+        <span>{current.icon}</span>
+        <span>{current.label}</span>
+        <span style={{ opacity: 0.45, fontSize: 10, transform: open ? "rotate(180deg)" : "none", display: "inline-block", transition: "transform 0.2s" }}>▼</span>
+      </button>
+
+      {open && (
+        <div style={{
+          position: "absolute", bottom: "calc(100% + 8px)", left: 0,
+          background: "rgba(18,18,22,0.97)", backdropFilter: "blur(20px)",
+          border: "1px solid rgba(255,255,255,0.09)", borderRadius: 14,
+          overflow: "hidden", boxShadow: "0 20px 60px rgba(0,0,0,0.8)",
+          minWidth: 220, zIndex: 50,
+        }}>
+          {modes.map((m) => (
+            <button
+              key={m.id}
+              onClick={() => { onChange(m.id); setOpen(false); }}
+              style={{
+                width: "100%", display: "flex", alignItems: "flex-start", gap: 12,
+                padding: "12px 16px", background: m.id === mode ? "rgba(255,255,255,0.06)" : "transparent",
+                border: "none", cursor: "pointer", color: "rgba(255,255,255,0.82)",
+                fontFamily: "inherit", textAlign: "left", transition: "background 0.15s",
+              }}
+              onMouseEnter={(e) => { if (m.id !== mode) e.currentTarget.style.background = "rgba(255,255,255,0.04)"; }}
+              onMouseLeave={(e) => { if (m.id !== mode) e.currentTarget.style.background = "transparent"; }}
+            >
+              <span style={{ fontSize: 18, flexShrink: 0, marginTop: 1 }}>{m.icon}</span>
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 500 }}>{m.label}</div>
+                <div style={{ fontSize: 11, color: "rgba(255,255,255,0.38)", marginTop: 2 }}>{m.desc}</div>
+              </div>
+              {m.id === mode && <span style={{ marginLeft: "auto", color: "rgba(255,255,255,0.5)", fontSize: 14, flexShrink: 0 }}>✓</span>}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── TextBox ─────────────────────────────────────────────────────────────────
+function TextBox({
+  onSend,
+  loading,
+  hasMessages,
+}: {
+  onSend: (query: string, mode: Mode) => void;
+  loading: boolean;
+  hasMessages: boolean;
+}) {
+  const [value, setValue] = useState("");
+  const [mode, setMode] = useState<Mode>("chat");
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+
+  // Auto-resize
+  useEffect(() => {
+    const ta = textareaRef.current;
+    if (!ta) return;
+    ta.style.height = "auto";
+    ta.style.height = Math.min(ta.scrollHeight, window.innerHeight * 0.45) + "px";
+  }, [value]);
+
+  function handleSend() {
+    if (!value.trim() || loading) return;
+    onSend(value.trim(), mode);
+    setValue("");
+    if (textareaRef.current) textareaRef.current.style.height = "auto";
+  }
+
+  function handleKeyDown(e: KeyboardEvent<HTMLTextAreaElement>) {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      handleSend();
+    }
+  }
+
+  const isBottom = hasMessages;
+
+  return (
+    <div style={{
+      position: "fixed",
+      bottom: isBottom ? 24 : "50%",
+      left: "50%",
+      transform: isBottom ? "translateX(-50%)" : "translate(-50%, 50%)",
+      width: "62%",
+      maxWidth: 780,
+      minWidth: 320,
+      transition: "bottom 0.5s cubic-bezier(0.16,1,0.3,1), transform 0.5s cubic-bezier(0.16,1,0.3,1)",
+      zIndex: 20,
+    }}>
+      {/* Outer container — glass card */}
+      <div style={{
+        background: "rgba(255,255,255,0.032)",
+        border: "1px solid rgba(255,255,255,0.08)",
+        borderRadius: 20,
+        boxShadow: "0 0 0 1px rgba(255,255,255,0.03) inset, 0 30px 80px rgba(0,0,0,0.8)",
+        backdropFilter: "blur(20px)",
+        overflow: "hidden",
+      }}>
+        {/* Textarea */}
+        <textarea
+          ref={textareaRef}
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          onKeyDown={handleKeyDown}
+          disabled={loading}
+          placeholder={
+            mode === "chat" ? "Ask me anything…" :
+            mode === "document" ? "Describe the document you want…" :
+            "What do you want to research?"
+          }
+          rows={1}
+          style={{
+            width: "100%",
+            resize: "none",
+            border: "none",
+            outline: "none",
+            background: "transparent",
+            color: "rgba(255,255,255,0.88)",
+            fontFamily: "Outfit, sans-serif",
+            fontSize: 15,
+            fontWeight: 400,
+            padding: "18px 20px 4px",
+            lineHeight: 1.6,
+            boxSizing: "border-box",
+            overflowY: "auto",
+            maxHeight: "45vh",
+            scrollbarWidth: "none",
+          }}
+        />
+
+        {/* Bottom row: mode + send */}
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 12px 12px" }}>
+          <ModeSelector mode={mode} onChange={setMode} disabled={loading} />
+
+          {/* Send button */}
+          <button
+            onClick={handleSend}
+            disabled={!value.trim() || loading}
+            style={{
+              width: 38, height: 38,
+              borderRadius: "50%",
+              border: "none",
+              background: value.trim() && !loading ? "rgba(255,255,255,0.88)" : "rgba(255,255,255,0.07)",
+              color: value.trim() && !loading ? "#000" : "rgba(255,255,255,0.25)",
+              cursor: value.trim() && !loading ? "pointer" : "default",
+              display: "flex", alignItems: "center", justifyContent: "center",
+              fontSize: 16,
+              transition: "all 0.3s cubic-bezier(0.16,1,0.3,1)",
+              flexShrink: 0,
+            }}
+          >
+            {loading ? (
+              <span style={{ width: 14, height: 14, borderRadius: "50%", border: "2px solid rgba(255,255,255,0.2)", borderTopColor: "rgba(255,255,255,0.7)", animation: "spin 0.8s linear infinite", display: "block" }} />
+            ) : (
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                <path d="M8 14V2M8 2L3 7M8 2L13 7" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+            )}
+          </button>
+        </div>
+      </div>
+
+      {/* Hint text — only shown when empty */}
+      {!hasMessages && !value && (
+        <p style={{ textAlign: "center", fontSize: 12, color: "rgba(255,255,255,0.2)", marginTop: 12, letterSpacing: "0.3px" }}>
+          Shift + Enter for new line · Enter to send
+        </p>
+      )}
+    </div>
+  );
+}
+
+// ─── Main Page ───────────────────────────────────────────────────────────────
+export default function Home() {
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [mouse, setMouse] = useState({ x: -1000, y: -1000 });
+  const chatRef = useRef<HTMLDivElement | null>(null);
+
+  // Global mouse tracking for spotlight
+  useEffect(() => {
+    function handleMouse(e: MouseEvent) {
+      setMouse({ x: e.clientX, y: e.clientY });
+    }
+    window.addEventListener("mousemove", handleMouse);
+    return () => window.removeEventListener("mousemove", handleMouse);
+  }, []);
+
+  // ── API calls ──
+  async function sendChat(query: string, mode: Mode) {
+    const endpoint = mode === "chat" ? "/chat" : mode === "document" ? "/document" : "/research";
+
+    const userMsg: Message = { id: Date.now(), role: "user", content: query, time: timestamp(), traces: [], sources: null };
+    const assistantMsg: Message = {
+      id: Date.now() + 1,
+      role: "assistant",
+      content: "",
+      mode,
+      time: timestamp(),
+      traces: [],
+      sources: null,
+    };
+
+    setMessages((prev) => [...prev, userMsg, assistantMsg]);
+    setLoading(true);
+
+    try {
+      if (mode === "research") {
+        await handleResearch(query, assistantMsg.id);
+      } else {
+        await handleStandard(query, mode, endpoint, assistantMsg.id);
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      updateMessage(assistantMsg.id, { content: `⚠️ Error: ${message}` });
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function updateMessage(id: number, patch: Partial<Message>) {
+    setMessages((prev) =>
+      prev.map((m) => (m.id === id ? { ...m, ...patch } : m))
+    );
+  }
+
+  async function handleStandard(query: string, mode: Mode, endpoint: string, assistantId: number) {
+    const res = await fetch(`${BASE_URL}${endpoint}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query, mode, iteration: 3 }),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    updateMessage(assistantId, { content: data.answer });
+  }
+
+  async function handleResearch(query: string, assistantId: number) {
+    const res = await fetch(`${BASE_URL}/research`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query, mode: "research", iteration: 3 }),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    if (!res.body) throw new Error("No response body");
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? ""; // keep incomplete line
+
+      let currentEvent = null;
+      for (const line of lines) {
+        if (line.startsWith("event:")) {
+          currentEvent = line.slice(6).trim();
+        } else if (line.startsWith("data:")) {
+          const raw = line.slice(5).trim();
+          try {
+            const payload = JSON.parse(raw);
+            if (currentEvent === "iteration") {
+              setMessages((prev) =>
+                prev.map((m) =>
+                  m.id === assistantId
+                    ? { ...m, traces: [...(m.traces || []), { step: payload.step, trace: payload.trace }] }
+                    : m
+                )
+              );
+            } else if (currentEvent === "done") {
+              updateMessage(assistantId, { content: payload.answer, sources: payload.sources });
+            } else if (currentEvent === "error") {
+              updateMessage(assistantId, { content: `⚠️ ${payload.error}` });
+            }
+          } catch {
+            // ignore parse errors
+          }
+          currentEvent = null;
+        }
+      }
+    }
+  }
+
+  return (
+    <>
+      {/* ── Global styles ── */}
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600&display=swap');
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+        html, body { height: 100%; background: #000; overflow: hidden; }
+        ::-webkit-scrollbar { display: none; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        @keyframes dotPulse {
+          0%, 80%, 100% { opacity: 0.2; transform: scale(0.8); }
+          40% { opacity: 1; transform: scale(1); }
+        }
+        @keyframes drift1 {
+          0%, 100% { transform: translate(0, 0); }
+          40% { transform: translate(14px, -22px); }
+          70% { transform: translate(-8px, 10px); }
+        }
+        @keyframes drift2 {
+          0%, 100% { transform: translate(0, 0); }
+          50% { transform: translate(-20px, -18px); }
+        }
+        textarea::placeholder { color: rgba(255,255,255,0.2); font-weight: 300; }
+      `}</style>
+
+      {/* ── Page ── */}
+      <div style={{ width: "100vw", height: "100vh", background: "#050505", fontFamily: "Outfit, sans-serif", overflow: "hidden", position: "relative" }}>
+
+        {/* Spotlight */}
+        <div style={{
+          position: "fixed", width: 700, height: 700,
+          left: mouse.x, top: mouse.y,
+          transform: "translate(-50%,-50%)",
+          background: "radial-gradient(circle at center, rgba(255,255,255,0.065) 0%, rgba(180,140,255,0.03) 30%, transparent 65%)",
+          filter: "blur(1px)",
+          pointerEvents: "none", zIndex: 1,
+          transition: "left 0.07s ease-out, top 0.07s ease-out",
+        }} />
+
+        {/* Film grain */}
+        <div style={{
+          position: "fixed", inset: 0, zIndex: 2, pointerEvents: "none", opacity: 0.04,
+          backgroundImage: `url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E")`,
+          backgroundSize: "180px 180px",
+        }} />
+
+        {/* Ambient orbs */}
+        <div style={{ position: "fixed", width: 350, height: 350, top: "5%", left: "5%", borderRadius: "50%", background: "radial-gradient(circle, rgba(110,70,240,0.09), transparent 70%)", filter: "blur(70px)", pointerEvents: "none", zIndex: 0, animation: "drift1 11s ease-in-out infinite" }} />
+        <div style={{ position: "fixed", width: 250, height: 250, bottom: "10%", right: "10%", borderRadius: "50%", background: "radial-gradient(circle, rgba(255,255,255,0.04), transparent 70%)", filter: "blur(70px)", pointerEvents: "none", zIndex: 0, animation: "drift2 14s ease-in-out infinite" }} />
+        <div style={{ position: "fixed", width: 180, height: 180, bottom: "25%", left: "8%", borderRadius: "50%", background: "radial-gradient(circle, rgba(60,140,255,0.07), transparent 70%)", filter: "blur(70px)", pointerEvents: "none", zIndex: 0, animation: "drift1 18s ease-in-out infinite reverse" }} />
+
+        {/* Hairline rules */}
+        <div style={{ position: "fixed", left: 0, right: 0, top: "28%", height: 1, background: "linear-gradient(90deg, transparent, rgba(255,255,255,0.045) 20%, rgba(255,255,255,0.045) 80%, transparent)", pointerEvents: "none", zIndex: 1 }} />
+        <div style={{ position: "fixed", left: 0, right: 0, bottom: "28%", height: 1, background: "linear-gradient(90deg, transparent, rgba(255,255,255,0.045) 20%, rgba(255,255,255,0.045) 80%, transparent)", pointerEvents: "none", zIndex: 1 }} />
+
+        {/* Content layer */}
+        <div style={{ position: "relative", zIndex: 10 }}>
+          {/* Empty state */}
+          {messages.length === 0 && (
+            <div style={{ position: "fixed", top: "32%", left: "50%", transform: "translateX(-50%)", textAlign: "center", pointerEvents: "none" }}>
+              <div style={{ fontSize: 13, fontWeight: 500, color: "rgba(255,255,255,0.25)", letterSpacing: "0.5px", textTransform: "uppercase", marginBottom: 14 }}>
+                LangGraph AI
+              </div>
+              <h1 style={{
+                fontSize: "clamp(28px, 4vw, 46px)", fontWeight: 600,
+                letterSpacing: "-1.2px", lineHeight: 1.15,
+                background: "linear-gradient(160deg, rgba(255,255,255,0.95) 30%, rgba(255,255,255,0.38) 100%)",
+                WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent",
+              }}>
+                Think deeper,<br />answer better.
+              </h1>
+            </div>
+          )}
+
+          <ChatArea messages={messages} chatRef={chatRef} />
+          <TextBox onSend={sendChat} loading={loading} hasMessages={messages.length > 0} />
+        </div>
+      </div>
+    </>
+  );
+}
+
+
+convert it into components  keeping the style exactly same and return in a single snippet
+
+
+Here is the code with the remaining layout elements from your main page extracted into their own clean, reusable components (`BackgroundEffects` and `EmptyState`). The styling and functionality remain completely untouched, and everything is bundled into a single snippet for you.
+
+```tsx
+"use client";
+import { useState, useRef, useEffect, type CSSProperties, type KeyboardEvent, type HTMLAttributes } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
+import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism";
+
+const BASE_URL = "https://langgraph-8us5.onrender.com";
+
+type Mode = "chat" | "document" | "research";
+type TraceStep = "plan" | "process" | "output";
+
+interface Trace {
+  step: TraceStep;
+  trace: string;
+}
+
+interface Message {
+  id: number;
+  role: "user" | "assistant";
+  content: string;
+  time: string;
+  mode?: Mode;
+  traces: Trace[];
+  sources: string[] | null;
+}
+
+// ─── Utility ────────────────────────────────────────────────────────────────
+function timestamp() {
+  return new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+// ─── Markdown renderer ──────────────────────────────────────────────────────
+function MDContent({ children }: { children: string }) {
+  return (
+    <ReactMarkdown
+      remarkPlugins={[remarkGfm]}
+      components={{
+        code({
+          inline,
+          className,
+          children,
+          ...props
+        }: HTMLAttributes<HTMLElement> & { inline?: boolean; className?: string }) {
+          const match = /language-(\w+)/.exec(className || "");
+          return !inline && match ? (
+            <SyntaxHighlighter
+              style={oneDark as Record<string, CSSProperties>}
+              language={match[1]}
+              PreTag="div"
+            >
+              {String(children).replace(/\n$/, "")}
+            </SyntaxHighlighter>
+          ) : (
+            <code
+              style={{
+                background: "rgba(255,255,255,0.07)",
+                padding: "2px 6px",
+                borderRadius: 5,
+                fontFamily: "monospace",
+                fontSize: "0.88em",
+                color: "rgba(255,255,255,0.85)",
+              }}
+              {...props}
+            >
+              {children}
+            </code>
+          );
+        },
+        p: ({ children }) => <p style={{ margin: "0 0 8px", lineHeight: 1.65 }}>{children}</p>,
+        ul: ({ children }) => <ul style={{ paddingLeft: 18, margin: "4px 0 8px" }}>{children}</ul>,
+        ol: ({ children }) => <ol style={{ paddingLeft: 18, margin: "4px 0 8px" }}>{children}</ol>,
+        li: ({ children }) => <li style={{ marginBottom: 3 }}>{children}</li>,
+        h1: ({ children }) => <h1 style={{ fontSize: "1.25em", fontWeight: 600, margin: "12px 0 6px", color: "rgba(255,255,255,0.92)" }}>{children}</h1>,
+        h2: ({ children }) => <h2 style={{ fontSize: "1.1em", fontWeight: 600, margin: "10px 0 5px", color: "rgba(255,255,255,0.88)" }}>{children}</h2>,
+        h3: ({ children }) => <h3 style={{ fontSize: "1em", fontWeight: 600, margin: "8px 0 4px", color: "rgba(255,255,255,0.85)" }}>{children}</h3>,
+        blockquote: ({ children }) => (
+          <blockquote style={{ borderLeft: "2px solid rgba(255,255,255,0.15)", paddingLeft: 12, margin: "6px 0", color: "rgba(255,255,255,0.55)", fontStyle: "italic" }}>
+            {children}
+          </blockquote>
+        ),
+        a: ({ href, children }) => (
+          <a href={href} target="_blank" rel="noreferrer" style={{ color: "rgba(180,160,255,0.85)", textDecoration: "underline" }}>
+            {children}
+          </a>
+        ),
+      }}
+    >
+      {children}
+    </ReactMarkdown>
+  );
+}
+
+// ─── Research trace bubble ───────────────────────────────────────────────────
+function TraceBubble({ step, trace }: { step: TraceStep; trace: string }) {
+  const [open, setOpen] = useState(step === "output");
+
+  const stepMeta: Record<TraceStep, { label: string; color: string; dot: string }> = {
+    plan: { label: "Planning", color: "rgba(110,70,240,0.25)", dot: "rgba(150,110,255,0.9)" },
+    process: { label: "Processing", color: "rgba(60,140,255,0.18)", dot: "rgba(100,170,255,0.9)" },
+    output: { label: "Output", color: "rgba(60,200,120,0.18)", dot: "rgba(80,220,140,0.9)" },
+  };
+  const meta = stepMeta[step] || stepMeta.process;
+
+  return (
+    <div style={{ marginBottom: 6, borderRadius: 10, overflow: "hidden", border: "1px solid rgba(255,255,255,0.06)", background: meta.color, backdropFilter: "blur(8px)" }}>
+      <button
+        onClick={() => setOpen((v) => !v)}
+        style={{
+          width: "100%", display: "flex", alignItems: "center", gap: 8,
+          padding: "7px 12px", background: "transparent", border: "none",
+          cursor: "pointer", color: "rgba(255,255,255,0.7)", fontSize: 12, fontWeight: 500, fontFamily: "inherit",
+        }}
+      >
+        <span style={{ width: 6, height: 6, borderRadius: "50%", background: meta.dot, flexShrink: 0 }} />
+        <span style={{ textTransform: "uppercase", letterSpacing: "0.6px" }}>{meta.label}</span>
+        <span style={{ marginLeft: "auto", opacity: 0.5, fontSize: 10, transition: "transform 0.2s", display: "inline-block", transform: open ? "rotate(180deg)" : "none" }}>▼</span>
+      </button>
+      {open && (
+        <div style={{ padding: "0 12px 10px", fontSize: 13, color: "rgba(255,255,255,0.72)", lineHeight: 1.6 }}>
+          <MDContent>{trace}</MDContent>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Loading Indicators ──────────────────────────────────────────────────────
+function LoadingDots() {
+  return (
+    <div style={{ display: "flex", gap: 5, alignItems: "center", padding: "2px 0" }}>
+      {[0, 1, 2].map((i) => (
+        <span
+          key={i}
+          style={{
+            width: 6, height: 6, borderRadius: "50%",
+            background: "rgba(255,255,255,0.4)",
+            animation: `dotPulse 1.2s ease-in-out ${i * 0.2}s infinite`,
+          }}
+        />
+      ))}
+    </div>
+  );
+}
+
+function ModeBadge({ mode, small }: { mode: Mode; small?: boolean }) {
+  const colors: Record<Mode, string> = {
+    chat: "rgba(255,255,255,0.12)",
+    document: "rgba(110,70,240,0.25)",
+    research: "rgba(60,140,255,0.22)",
+  };
+  const labels: Record<Mode, string> = {
+    chat: "Chat",
+    document: "Document",
+    research: "Research",
+  };
+  return (
+    <span style={{
+      padding: small ? "2px 8px" : "4px 12px",
+      borderRadius: 20,
+      fontSize: small ? 10 : 12,
+      fontWeight: 500,
+      letterSpacing: "0.4px",
+      background: colors[mode] || colors.chat,
+      color: "rgba(255,255,255,0.6)",
+      border: "1px solid rgba(255,255,255,0.08)",
+      textTransform: "uppercase",
+    }}>
+      {labels[mode]}
+    </span>
+  );
+}
+
+// ─── Message bubble ──────────────────────────────────────────────────────────
+function MessageBubble({ msg }: { msg: Message }) {
+  const isUser = msg.role === "user";
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", alignItems: isUser ? "flex-end" : "flex-start", marginBottom: 18 }}>
+      {/* Role label */}
+      <div style={{ fontSize: 10, color: "rgba(255,255,255,0.25)", marginBottom: 5, letterSpacing: "0.5px", textTransform: "uppercase", paddingLeft: isUser ? 0 : 4, paddingRight: isUser ? 4 : 0 }}>
+        {isUser ? "You" : "Assistant"} · {msg.time}
+      </div>
+
+      {/* Bubble */}
+      <div
+        style={{
+          maxWidth: "82%",
+          padding: "12px 16px",
+          borderRadius: isUser ? "18px 18px 4px 18px" : "18px 18px 18px 4px",
+          background: isUser ? "rgba(255,255,255,0.09)" : "rgba(255,255,255,0.042)",
+          border: isUser ? "1px solid rgba(255,255,255,0.1)" : "1px solid rgba(255,255,255,0.058)",
+          boxShadow: isUser ? "0 4px 20px rgba(0,0,0,0.4)" : "0 4px 20px rgba(0,0,0,0.3)",
+          fontSize: 14,
+          color: "rgba(255,255,255,0.88)",
+          lineHeight: 1.65,
+          backdropFilter: "blur(10px)",
+          fontWeight: 400,
+        }}
+      >
+        {msg.role === "user" ? (
+          <span style={{ whiteSpace: "pre-wrap" }}>{msg.content}</span>
+        ) : (
+          <>
+            {/* Research traces */}
+            {msg.traces && msg.traces.length > 0 && (
+              <div style={{ marginBottom: 14 }}>
+                {msg.traces.map((t, i) => (
+                  <TraceBubble key={i} step={t.step} trace={t.trace} />
+                ))}
+              </div>
+            )}
+
+            {/* Main answer */}
+            {msg.content ? (
+              <MDContent>{msg.content}</MDContent>
+            ) : (
+              <LoadingDots />
+            )}
+
+            {/* Sources */}
+            {msg.sources && msg.sources.length > 0 && (
+              <div
+                style={{
+                  marginTop: 12,
+                  paddingTop: 10,
+                  borderTop: "1px solid rgba(255,255,255,0.07)",
+                  fontSize: 12,
+                  color: "rgba(255,255,255,0.4)",
+                }}
+              >
+                <span
+                  style={{
+                    fontWeight: 500,
+                    color: "rgba(255,255,255,0.55)",
+                    display: "block",
+                    marginBottom: 6,
+                  }}
+                >
+                  Sources
+                </span>
+
+                <ul style={{ paddingLeft: 16, margin: 0 }}>
+                  {msg.sources.map((src, i) => (
+                    <li key={i} style={{ marginBottom: 4 }}>
+                      <a
+                        href={src}
+                        target="_blank"
+                        rel="noreferrer"
+                        style={{
+                          color: "rgba(180,160,255,0.85)",
+                          textDecoration: "underline",
+                          wordBreak: "break-all",
+                        }}
+                      >
+                        {src}
+                      </a>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            {/* Mode badge */}
+            {msg.mode && (
+              <div style={{ marginTop: 8, display: "flex", gap: 6 }}>
+                <ModeBadge mode={msg.mode} small />
+              </div>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── ChatArea ────────────────────────────────────────────────────────────────
+function ChatArea({
+  messages,
+  chatRef,
+}: {
+  messages: Message[];
+  chatRef: React.RefObject<HTMLDivElement | null>;
+}) {
+  useEffect(() => {
+    if (chatRef.current) {
+      chatRef.current.scrollTop = chatRef.current.scrollHeight;
+    }
+  }, [messages]);
+
+  if (messages.length === 0) return null;
+
+  return (
+    <div
+      ref={chatRef}
+      style={{
+        position: "fixed",
+        top: 0,
+        left: "50%",
+        transform: "translateX(-50%)",
+        width: "62%",
+        maxWidth: 780,
+        minWidth: 320,
+        height: "calc(100vh - 180px)",
+        overflowY: "auto",
+        padding: "40px 8px 24px",
+        scrollbarWidth: "none",
+      }}
+    >
+      {messages.map((msg) => (
+        <MessageBubble key={msg.id} msg={msg} />
+      ))}
+    </div>
+  );
+}
+
+// ─── Mode selector ───────────────────────────────────────────────────────────
+function ModeSelector({
+  mode,
+  onChange,
+  disabled,
+}: {
+  mode: Mode;
+  onChange: (mode: Mode) => void;
+  disabled?: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement | null>(null);
+
+  const modes: Array<{ id: Mode; icon: string; label: string; desc: string }> = [
+    { id: "chat", icon: "💬", label: "Chat", desc: "Fast conversational answers" },
+    { id: "document", icon: "📄", label: "Document", desc: "Long-form structured content" },
+    { id: "research", icon: "🔬", label: "Research", desc: "Multi-step reasoning + sources" },
+  ];
+
+  useEffect(() => {
+    function handleClick(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    }
+    document.addEventListener("mousedown", handleClick);
+    return () => document.removeEventListener("mousedown", handleClick);
+  }, []);
+
+  const current = modes.find((m) => m.id === mode) ?? modes[0];
+
+  return (
+    <div ref={ref} style={{ position: "relative" }}>
+      <button
+        onClick={() => !disabled && setOpen((v) => !v)}
+        disabled={disabled}
+        style={{
+          display: "flex", alignItems: "center", gap: 6,
+          padding: "6px 12px", borderRadius: 22,
+          background: open ? "rgba(255,255,255,0.1)" : "rgba(255,255,255,0.055)",
+          border: "1px solid rgba(255,255,255,0.09)",
+          color: "rgba(255,255,255,0.7)", fontSize: 13, fontWeight: 500,
+          cursor: disabled ? "default" : "pointer", fontFamily: "inherit",
+          transition: "all 0.2s",
+        }}
+      >
+        <span>{current.icon}</span>
+        <span>{current.label}</span>
+        <span style={{ opacity: 0.45, fontSize: 10, transform: open ? "rotate(180deg)" : "none", display: "inline-block", transition: "transform 0.2s" }}>▼</span>
+      </button>
+
+      {open && (
+        <div style={{
+          position: "absolute", bottom: "calc(100% + 8px)", left: 0,
+          background: "rgba(18,18,22,0.97)", backdropFilter: "blur(20px)",
+          border: "1px solid rgba(255,255,255,0.09)", borderRadius: 14,
+          overflow: "hidden", boxShadow: "0 20px 60px rgba(0,0,0,0.8)",
+          minWidth: 220, zIndex: 50,
+        }}>
+          {modes.map((m) => (
+            <button
+              key={m.id}
+              onClick={() => { onChange(m.id); setOpen(false); }}
+              style={{
+                width: "100%", display: "flex", alignItems: "flex-start", gap: 12,
+                padding: "12px 16px", background: m.id === mode ? "rgba(255,255,255,0.06)" : "transparent",
+                border: "none", cursor: "pointer", color: "rgba(255,255,255,0.82)",
+                fontFamily: "inherit", textAlign: "left", transition: "background 0.15s",
+              }}
+              onMouseEnter={(e) => { if (m.id !== mode) e.currentTarget.style.background = "rgba(255,255,255,0.04)"; }}
+              onMouseLeave={(e) => { if (m.id !== mode) e.currentTarget.style.background = "transparent"; }}
+            >
+              <span style={{ fontSize: 18, flexShrink: 0, marginTop: 1 }}>{m.icon}</span>
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 500 }}>{m.label}</div>
+                <div style={{ fontSize: 11, color: "rgba(255,255,255,0.38)", marginTop: 2 }}>{m.desc}</div>
+              </div>
+              {m.id === mode && <span style={{ marginLeft: "auto", color: "rgba(255,255,255,0.5)", fontSize: 14, flexShrink: 0 }}>✓</span>}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── TextBox ─────────────────────────────────────────────────────────────────
+function TextBox({
+  onSend,
+  loading,
+  hasMessages,
+}: {
+  onSend: (query: string, mode: Mode) => void;
+  loading: boolean;
+  hasMessages: boolean;
+}) {
+  const [value, setValue] = useState("");
+  const [mode, setMode] = useState<Mode>("chat");
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+
+  // Auto-resize
+  useEffect(() => {
+    const ta = textareaRef.current;
+    if (!ta) return;
+    ta.style.height = "auto";
+    ta.style.height = Math.min(ta.scrollHeight, window.innerHeight * 0.45) + "px";
+  }, [value]);
+
+  function handleSend() {
+    if (!value.trim() || loading) return;
+    onSend(value.trim(), mode);
+    setValue("");
+    if (textareaRef.current) textareaRef.current.style.height = "auto";
+  }
+
+  function handleKeyDown(e: KeyboardEvent<HTMLTextAreaElement>) {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      handleSend();
+    }
+  }
+
+  const isBottom = hasMessages;
+
+  return (
+    <div style={{
+      position: "fixed",
+      bottom: isBottom ? 24 : "50%",
+      left: "50%",
+      transform: isBottom ? "translateX(-50%)" : "translate(-50%, 50%)",
+      width: "62%",
+      maxWidth: 780,
+      minWidth: 320,
+      transition: "bottom 0.5s cubic-bezier(0.16,1,0.3,1), transform 0.5s cubic-bezier(0.16,1,0.3,1)",
+      zIndex: 20,
+    }}>
+      {/* Outer container — glass card */}
+      <div style={{
+        background: "rgba(255,255,255,0.032)",
+        border: "1px solid rgba(255,255,255,0.08)",
+        borderRadius: 20,
+        boxShadow: "0 0 0 1px rgba(255,255,255,0.03) inset, 0 30px 80px rgba(0,0,0,0.8)",
+        backdropFilter: "blur(20px)",
+        overflow: "hidden",
+      }}>
+        {/* Textarea */}
+        <textarea
+          ref={textareaRef}
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          onKeyDown={handleKeyDown}
+          disabled={loading}
+          placeholder={
+            mode === "chat" ? "Ask me anything…" :
+            mode === "document" ? "Describe the document you want…" :
+            "What do you want to research?"
+          }
+          rows={1}
+          style={{
+            width: "100%",
+            resize: "none",
+            border: "none",
+            outline: "none",
+            background: "transparent",
+            color: "rgba(255,255,255,0.88)",
+            fontFamily: "Outfit, sans-serif",
+            fontSize: 15,
+            fontWeight: 400,
+            padding: "18px 20px 4px",
+            lineHeight: 1.6,
+            boxSizing: "border-box",
+            overflowY: "auto",
+            maxHeight: "45vh",
+            scrollbarWidth: "none",
+          }}
+        />
+
+        {/* Bottom row: mode + send */}
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 12px 12px" }}>
+          <ModeSelector mode={mode} onChange={setMode} disabled={loading} />
+
+          {/* Send button */}
+          <button
+            onClick={handleSend}
+            disabled={!value.trim() || loading}
+            style={{
+              width: 38, height: 38,
+              borderRadius: "50%",
+              border: "none",
+              background: value.trim() && !loading ? "rgba(255,255,255,0.88)" : "rgba(255,255,255,0.07)",
+              color: value.trim() && !loading ? "#000" : "rgba(255,255,255,0.25)",
+              cursor: value.trim() && !loading ? "pointer" : "default",
+              display: "flex", alignItems: "center", justifyContent: "center",
+              fontSize: 16,
+              transition: "all 0.3s cubic-bezier(0.16,1,0.3,1)",
+              flexShrink: 0,
+            }}
+          >
+            {loading ? (
+              <span style={{ width: 14, height: 14, borderRadius: "50%", border: "2px solid rgba(255,255,255,0.2)", borderTopColor: "rgba(255,255,255,0.7)", animation: "spin 0.8s linear infinite", display: "block" }} />
+            ) : (
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                <path d="M8 14V2M8 2L3 7M8 2L13 7" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+            )}
+          </button>
+        </div>
+      </div>
+
+      {/* Hint text — only shown when empty */}
+      {!hasMessages && !value && (
+        <p style={{ textAlign: "center", fontSize: 12, color: "rgba(255,255,255,0.2)", marginTop: 12, letterSpacing: "0.3px" }}>
+          Shift + Enter for new line · Enter to send
+        </p>
+      )}
+    </div>
+  );
+}
+
+// ─── Layout Visuals ──────────────────────────────────────────────────────────
+function BackgroundEffects({ mouse }: { mouse: { x: number; y: number } }) {
+  return (
+    <>
+      {/* Spotlight */}
+      <div style={{
+        position: "fixed", width: 700, height: 700,
+        left: mouse.x, top: mouse.y,
+        transform: "translate(-50%,-50%)",
+        background: "radial-gradient(circle at center, rgba(255,255,255,0.065) 0%, rgba(180,140,255,0.03) 30%, transparent 65%)",
+        filter: "blur(1px)",
+        pointerEvents: "none", zIndex: 1,
+        transition: "left 0.07s ease-out, top 0.07s ease-out",
+      }} />
+
+      {/* Film grain */}
+      <div style={{
+        position: "fixed", inset: 0, zIndex: 2, pointerEvents: "none", opacity: 0.04,
+        backgroundImage: `url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E")`,
+        backgroundSize: "180px 180px",
+      }} />
+
+      {/* Ambient orbs */}
+      <div style={{ position: "fixed", width: 350, height: 350, top: "5%", left: "5%", borderRadius: "50%", background: "radial-gradient(circle, rgba(110,70,240,0.09), transparent 70%)", filter: "blur(70px)", pointerEvents: "none", zIndex: 0, animation: "drift1 11s ease-in-out infinite" }} />
+      <div style={{ position: "fixed", width: 250, height: 250, bottom: "10%", right: "10%", borderRadius: "50%", background: "radial-gradient(circle, rgba(255,255,255,0.04), transparent 70%)", filter: "blur(70px)", pointerEvents: "none", zIndex: 0, animation: "drift2 14s ease-in-out infinite" }} />
+      <div style={{ position: "fixed", width: 180, height: 180, bottom: "25%", left: "8%", borderRadius: "50%", background: "radial-gradient(circle, rgba(60,140,255,0.07), transparent 70%)", filter: "blur(70px)", pointerEvents: "none", zIndex: 0, animation: "drift1 18s ease-in-out infinite reverse" }} />
+
+      {/* Hairline rules */}
+      <div style={{ position: "fixed", left: 0, right: 0, top: "28%", height: 1, background: "linear-gradient(90deg, transparent, rgba(255,255,255,0.045) 20%, rgba(255,255,255,0.045) 80%, transparent)", pointerEvents: "none", zIndex: 1 }} />
+      <div style={{ position: "fixed", left: 0, right: 0, bottom: "28%", height: 1, background: "linear-gradient(90deg, transparent, rgba(255,255,255,0.045) 20%, rgba(255,255,255,0.045) 80%, transparent)", pointerEvents: "none", zIndex: 1 }} />
+    </>
+  );
+}
+
+function EmptyState() {
+  return (
+    <div style={{ position: "fixed", top: "32%", left: "50%", transform: "translateX(-50%)", textAlign: "center", pointerEvents: "none" }}>
+      <div style={{ fontSize: 13, fontWeight: 500, color: "rgba(255,255,255,0.25)", letterSpacing: "0.5px", textTransform: "uppercase", marginBottom: 14 }}>
+        LangGraph AI
+      </div>
+      <h1 style={{
+        fontSize: "clamp(28px, 4vw, 46px)", fontWeight: 600,
+        letterSpacing: "-1.2px", lineHeight: 1.15,
+        background: "linear-gradient(160deg, rgba(255,255,255,0.95) 30%, rgba(255,255,255,0.38) 100%)",
+        WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent",
+      }}>
+        Think deeper,<br />answer better.
+      </h1>
+    </div>
+  );
+}
+
+// ─── Main Page ───────────────────────────────────────────────────────────────
+export default function Home() {
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [mouse, setMouse] = useState({ x: -1000, y: -1000 });
+  const chatRef = useRef<HTMLDivElement | null>(null);
+
+  // Global mouse tracking for spotlight
+  useEffect(() => {
+    function handleMouse(e: MouseEvent) {
+      setMouse({ x: e.clientX, y: e.clientY });
+    }
+    window.addEventListener("mousemove", handleMouse);
+    return () => window.removeEventListener("mousemove", handleMouse);
+  }, []);
+
+  // ── API calls ──
+  async function sendChat(query: string, mode: Mode) {
+    const endpoint = mode === "chat" ? "/chat" : mode === "document" ? "/document" : "/research";
+
+    const userMsg: Message = { id: Date.now(), role: "user", content: query, time: timestamp(), traces: [], sources: null };
+    const assistantMsg: Message = {
+      id: Date.now() + 1,
+      role: "assistant",
+      content: "",
+      mode,
+      time: timestamp(),
+      traces: [],
+      sources: null,
+    };
+
+    setMessages((prev) => [...prev, userMsg, assistantMsg]);
+    setLoading(true);
+
+    try {
+      if (mode === "research") {
+        await handleResearch(query, assistantMsg.id);
+      } else {
+        await handleStandard(query, mode, endpoint, assistantMsg.id);
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      updateMessage(assistantMsg.id, { content: `⚠️ Error: ${message}` });
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function updateMessage(id: number, patch: Partial<Message>) {
+    setMessages((prev) =>
+      prev.map((m) => (m.id === id ? { ...m, ...patch } : m))
+    );
+  }
+
+  async function handleStandard(query: string, mode: Mode, endpoint: string, assistantId: number) {
+    const res = await fetch(`${BASE_URL}${endpoint}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query, mode, iteration: 3 }),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    updateMessage(assistantId, { content: data.answer });
+  }
+
+  async function handleResearch(query: string, assistantId: number) {
+    const res = await fetch(`${BASE_URL}/research`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query, mode: "research", iteration: 3 }),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    if (!res.body) throw new Error("No response body");
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? ""; // keep incomplete line
+
+      let currentEvent = null;
+      for (const line of lines) {
+        if (line.startsWith("event:")) {
+          currentEvent = line.slice(6).trim();
+        } else if (line.startsWith("data:")) {
+          const raw = line.slice(5).trim();
+          try {
+            const payload = JSON.parse(raw);
+            if (currentEvent === "iteration") {
+              setMessages((prev) =>
+                prev.map((m) =>
+                  m.id === assistantId
+                    ? { ...m, traces: [...(m.traces || []), { step: payload.step, trace: payload.trace }] }
+                    : m
+                )
+              );
+            } else if (currentEvent === "done") {
+              updateMessage(assistantId, { content: payload.answer, sources: payload.sources });
+            } else if (currentEvent === "error") {
+              updateMessage(assistantId, { content: `⚠️ ${payload.error}` });
+            }
+          } catch {
+            // ignore parse errors
+          }
+          currentEvent = null;
+        }
+      }
+    }
+  }
+
+  return (
+    <>
+      {/* ── Global styles ── */}
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600&display=swap');
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+        html, body { height: 100%; background: #000; overflow: hidden; }
+        ::-webkit-scrollbar { display: none; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        @keyframes dotPulse {
+          0%, 80%, 100% { opacity: 0.2; transform: scale(0.8); }
+          40% { opacity: 1; transform: scale(1); }
+        }
+        @keyframes drift1 {
+          0%, 100% { transform: translate(0, 0); }
+          40% { transform: translate(14px, -22px); }
+          70% { transform: translate(-8px, 10px); }
+        }
+        @keyframes drift2 {
+          0%, 100% { transform: translate(0, 0); }
+          50% { transform: translate(-20px, -18px); }
+        }
+        textarea::placeholder { color: rgba(255,255,255,0.2); font-weight: 300; }
+      `}</style>
+
+      {/* ── Page ── */}
+      <div style={{ width: "100vw", height: "100vh", background: "#050505", fontFamily: "Outfit, sans-serif", overflow: "hidden", position: "relative" }}>
+        
+        {/* Abstract Background Elements */}
+        <BackgroundEffects mouse={mouse} />
+
+        {/* Content layer */}
+        <div style={{ position: "relative", zIndex: 10 }}>
+          {messages.length === 0 && <EmptyState />}
+          <ChatArea messages={messages} chatRef={chatRef} />
+          <TextBox onSend={sendChat} loading={loading} hasMessages={messages.length > 0} />
+        </div>
+      </div>
+    </>
+  );
+}
 ```
-
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
-
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
-
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
-
-## Learn More
-
-To learn more about Next.js, take a look at the following resources:
-
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
