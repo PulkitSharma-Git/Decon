@@ -9,7 +9,7 @@ type Mode = "chat" | "document" | "research";
 // All 5 pipeline steps surfaced individually
 type TraceStep = "plan" | "retrieve" | "analysis" | "refine" | "output";
 
-const BASE_URL = process.env.BASE_URL;
+const BASE_URL = process.env.NEXT_PUBLIC_BASE_URL;
 interface Trace {
   step: TraceStep;
   trace: string;
