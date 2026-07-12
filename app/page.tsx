@@ -281,7 +281,7 @@ function ModeBadge({ mode, small }: { mode: Mode; small?: boolean }) {
 }
 
 // ─── ChatArea ────────────────────────────────────────────────────────────────
-function ChatArea({ messages, chatRef }: { messages: Message[]; chatRef: React.RefObject<HTMLDivElement | null> }) {
+function ChatArea({ messages, chatRef, mode }: { messages: Message[]; chatRef: React.RefObject<HTMLDivElement | null>; mode: Mode }) {
   useEffect(() => {
     if (chatRef.current) chatRef.current.scrollTop = chatRef.current.scrollHeight;
   }, [messages]);
@@ -290,10 +290,13 @@ function ChatArea({ messages, chatRef }: { messages: Message[]; chatRef: React.R
 
   return (
     <div ref={chatRef} style={{
-      position: "fixed", top: 0, left: "50%", transform: "translateX(-50%)",
+      position: "fixed", top: 0, 
+      left: mode === "document" ? "calc(50% + 140px)" : "50%",
+      transform: "translateX(-50%)",
       width: "62%", maxWidth: 780, minWidth: 320,
       height: "calc(100vh - 180px)",
       overflowY: "auto", padding: "40px 8px 24px", scrollbarWidth: "none",
+      transition: "left 0.4s cubic-bezier(0.16, 1, 0.3, 1)",
     }}>
       {messages.map((msg) => <MessageBubble key={msg.id} msg={msg} />)}
     </div>
@@ -369,102 +372,154 @@ function ModeSelector({ mode, onChange, disabled }: { mode: Mode; onChange: (mod
 }
 
 // ─── TextBox ─────────────────────────────────────────────────────────────────
-function TextBox({ onSend, loading, hasMessages }: {
+interface DocumentFile {
+  name: string;
+  status: "processing" | "completed" | "failed";
+  selected: boolean;
+}
+
+function TextBox({ 
+  onSend, 
+  loading, 
+  hasMessages,
+  mode,
+  onModeChange,
+  documents,
+  onUpload,
+  onToggleSelect,
+  isUploading
+}: {
   onSend: (query: string, mode: Mode, frontendIteration: number) => void;
   loading: boolean;
   hasMessages: boolean;
+  mode: Mode;
+  onModeChange: (mode: Mode) => void;
+  documents: DocumentFile[];
+  onUpload: (file: File) => Promise<void>;
+  onToggleSelect: (name: string) => void;
+  isUploading: boolean;
 }) {
   const [value, setValue] = useState("");
-  const [mode, setMode] = useState<Mode>("chat");
-  const [iteration, setIteration] = useState(1);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
 
-  useEffect(() => {
-    const ta = textareaRef.current;
-    if (!ta) return;
-    ta.style.height = "auto";
-    ta.style.height = Math.min(ta.scrollHeight, window.innerHeight * 0.45) + "px";
-  }, [value]);
+  const completedCount = documents.filter(d => d.status === "completed").length;
 
   function handleSend() {
     if (!value.trim() || loading) return;
-    onSend(value.trim(), mode, iteration);
+    if (mode === "document" && completedCount === 0) {
+      alert("Please upload and index a PDF first.");
+      return;
+    }
+    onSend(value.trim(), mode, 1);
     setValue("");
-    if (textareaRef.current) textareaRef.current.style.height = "auto";
-  }
-
-  function handleKeyDown(e: KeyboardEvent<HTMLTextAreaElement>) {
-    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSend(); }
   }
 
   return (
     <div style={{
       position: "fixed",
-      bottom: hasMessages ? 24 : "32%",
-      left: "50%",
-      transform: hasMessages ? "translateX(-50%)" : "translate(-50%, 50%)",
+      bottom: hasMessages ? 24 : "40%",
+      left: mode === "document" ? "calc(50% + 140px)" : "50%",
+      transform: "translateX(-50%)",
       width: "62%", maxWidth: 780, minWidth: 320,
-      transition: "bottom 0.5s cubic-bezier(0.16,1,0.3,1), transform 0.5s cubic-bezier(0.16,1,0.3,1)",
       zIndex: 20,
+      transition: "bottom 0.5s cubic-bezier(0.16,1,0.3,1), left 0.4s cubic-bezier(0.16, 1, 0.3, 1)"
     }}>
       <div style={{
         background: "rgba(255,255,255,0.032)",
         border: "1px solid rgba(255,255,255,0.08)",
-        borderRadius: 20,
-        boxShadow: "0 0 0 1px rgba(255,255,255,0.03) inset, 0 30px 80px rgba(0,0,0,0.8)",
+        borderRadius: 24,
+        padding: "8px",
         backdropFilter: "blur(20px)",
+        boxShadow: "0 20px 80px rgba(0,0,0,0.8)",
       }}>
-        <textarea ref={textareaRef} value={value} onChange={(e) => setValue(e.target.value)}
-          onKeyDown={handleKeyDown} disabled={loading}
-          placeholder={
-            mode === "chat" ? "Ask me anything…" :
-            mode === "document" ? "Describe the document you want…" :
-            "What do you want to research?"
-          }
+        
+        {/* Selected Files Chips in TextBox */}
+        {mode === "document" && documents.filter(d => d.selected).length > 0 && (
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 6, margin: "8px 12px" }}>
+            {documents.filter(d => d.selected).map(doc => (
+              <div key={doc.name} style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 8,
+                padding: "6px 12px",
+                background: "rgba(255,255,255,0.06)",
+                borderRadius: 12,
+                border: "1px solid rgba(255,255,255,0.1)",
+                fontSize: 12,
+                color: "rgba(255,255,255,0.8)"
+              }}>
+                <span style={{ opacity: 0.6 }}>📄</span>
+                <span style={{ maxWidth: 120, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  {doc.name}
+                </span>
+                <button 
+                  onClick={() => onToggleSelect(doc.name)}
+                  style={{ background: "none", border: "none", color: "#ff4d4d", cursor: "pointer", marginLeft: 4 }}
+                >✕</button>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <textarea 
+          ref={textareaRef} 
+          value={value} 
+          onChange={(e) => setValue(e.target.value)}
+          placeholder={mode === "document" ? "Ask about your PDF(s)..." : "Type a message..."}
           rows={1}
           style={{
             width: "100%", resize: "none", border: "none", outline: "none",
-            background: "transparent", color: "rgba(255,255,255,0.88)",
-            fontFamily: "Outfit, sans-serif", fontSize: 15, fontWeight: 400,
-            padding: "18px 20px 4px", lineHeight: 1.6, boxSizing: "border-box",
-            overflowY: "auto", maxHeight: "45vh", scrollbarWidth: "none",
-          }} />
+            background: "transparent", color: "#fff", padding: "12px 16px",
+            fontSize: 15, fontFamily: "inherit"
+          }}
+        />
 
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 12px 12px" }}>
-          <div style={{ display: "flex", gap: 10 }}>
-            <ModeSelector mode={mode} onChange={setMode} disabled={loading} />
-            {mode === "research"}
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "4px 8px" }}>
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <ModeSelector mode={mode} onChange={onModeChange} />
+            
+            {/* Integrated Upload Button (Visible in Document mode) */}
+            {mode === "document" && (
+              <label style={{
+                cursor: "pointer",
+                padding: "6px",
+                borderRadius: "50%",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                background: isUploading ? "transparent" : "rgba(255,255,255,0.05)",
+                transition: "0.2s"
+              }}>
+                <input type="file" accept=".pdf" hidden onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  if (file) onUpload(file);
+                }} />
+                {isUploading ? (
+                   <span style={{ width: 16, height: 16, border: "2px solid #555", borderTopColor: "#fff", borderRadius: "50%", animation: "spin 1s linear infinite" }} />
+                ) : (
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.6)" strokeWidth="2">
+                    <path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.82-2.82l8.49-8.48" />
+                  </svg>
+                )}
+              </label>
+            )}
           </div>
 
-          <button onClick={handleSend} disabled={!value.trim() || loading}
+          <button 
+            onClick={handleSend} 
+            disabled={(!value.trim() && (mode === "document" && completedCount === 0)) || loading}
             style={{
-              width: 38, height: 38, borderRadius: "50%", border: "none",
-              background: value.trim() && !loading ? "rgba(255,255,255,0.88)" : "rgba(255,255,255,0.07)",
-              color: value.trim() && !loading ? "#000" : "rgba(255,255,255,0.25)",
-              cursor: value.trim() && !loading ? "pointer" : "default",
-              display: "flex", alignItems: "center", justifyContent: "center",
-              fontSize: 16, transition: "all 0.3s cubic-bezier(0.16,1,0.3,1)", flexShrink: 0,
-            }}>
-            {loading ? (
-              <span style={{
-                width: 14, height: 14, borderRadius: "50%",
-                border: "2px solid rgba(255,255,255,0.2)", borderTopColor: "rgba(255,255,255,0.7)",
-                animation: "spin 0.8s linear infinite", display: "block",
-              }} />
-            ) : (
-              <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-                <path d="M8 14V2M8 2L3 7M8 2L13 7" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
-              </svg>
-            )}
+              width: 32, height: 32, borderRadius: "50%", border: "none",
+              background: (value.trim()) ? "#fff" : "rgba(255,255,255,0.1)",
+              cursor: "pointer"
+            }}
+          >
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+              <path d="M8 14V2M8 2L3 7M8 2L13 7" stroke="#000" strokeWidth="2" strokeLinecap="round" />
+            </svg>
           </button>
         </div>
       </div>
-
-      {!hasMessages && !value && (
-        <p style={{ textAlign: "center", fontSize: 12, color: "rgba(255,255,255,0.2)", marginTop: 12, letterSpacing: "0.3px" }}>
-          Shift + Enter for new line · Enter to send
-        </p>
-      )}
     </div>
   );
 }
@@ -475,6 +530,92 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [mouse, setMouse] = useState({ x: -1000, y: -1000 });
   const chatRef = useRef<HTMLDivElement | null>(null);
+
+  // PDF integration states
+  const [mode, setMode] = useState<Mode>("chat");
+  const [documents, setDocuments] = useState<DocumentFile[]>([]);
+  const [isUploading, setIsUploading] = useState(false);
+
+  // Load documents from localStorage on mount
+  useEffect(() => {
+    const saved = localStorage.getItem("decon_documents");
+    if (saved) {
+      try {
+        setDocuments(JSON.parse(saved));
+      } catch (e) {
+        console.error("Failed to parse saved documents", e);
+      }
+    }
+  }, []);
+
+  // Save documents to localStorage when modified
+  useEffect(() => {
+    localStorage.setItem("decon_documents", JSON.stringify(documents));
+  }, [documents]);
+
+  // Poll status for all processing files
+  useEffect(() => {
+    const processingDocs = documents.filter(d => d.status === "processing");
+    if (processingDocs.length === 0) return;
+
+    const pdfServiceUrl = process.env.NEXT_PUBLIC_RAG_SERVER_URL || BASE_URL || "http://localhost:8000";
+
+    const intervals = processingDocs.map(doc => {
+      const filename = doc.name;
+      const intervalId = setInterval(async () => {
+        try {
+          const res = await fetch(`${pdfServiceUrl}/upload/status?filename=${encodeURIComponent(filename)}`);
+          if (res.ok) {
+            const data = await res.json();
+            if (data.status === "completed" || data.status === "failed") {
+              setDocuments(prev => prev.map(d => d.name === filename ? { ...d, status: data.status } : d));
+              clearInterval(intervalId);
+            }
+          }
+        } catch (err) {
+          console.error("Error checking status of", filename, err);
+        }
+      }, 3000);
+
+      return { filename, intervalId };
+    });
+
+    return () => {
+      intervals.forEach(item => clearInterval(item.intervalId));
+    };
+  }, [documents]);
+
+  const onUpload = async (file: File) => {
+    if (file.type !== "application/pdf") return;
+    
+    if (documents.some(d => d.name === file.name)) {
+      alert("File already exists in library.");
+      return;
+    }
+
+    setIsUploading(true);
+    const formData = new FormData();
+    formData.append("pdf", file);
+
+    const pdfServiceUrl = process.env.NEXT_PUBLIC_RAG_SERVER_URL || BASE_URL || "http://localhost:8000";
+
+    try {
+      const res = await fetch(`${pdfServiceUrl}/upload/pdf`, {
+        method: "POST",
+        body: formData
+      });
+      if (!res.ok) throw new Error("Upload failed");
+
+      setDocuments(prev => [
+        ...prev,
+        { name: file.name, status: "processing", selected: true }
+      ]);
+    } catch (err) {
+      alert("Upload failed: " + (err instanceof Error ? err.message : String(err)));
+    } finally {
+      setIsUploading(false);
+    }
+  };
 
   useEffect(() => {
     function handleMouse(e: MouseEvent) { setMouse({ x: e.clientX, y: e.clientY }); }
@@ -487,11 +628,20 @@ export default function Home() {
   }
 
   async function sendChat(query: string, mode: Mode, frontendIteration: number) {
-    const endpoint = mode === "chat" ? "/chat" : mode === "document" ? "/document" : "/research";
     const backendIterationMap: Record<number, number> = { 1: 4, 2: 5, 3: 6, 4: 7, 5: 9 };
     const backendIteration = backendIterationMap[frontendIteration] ?? 4;
 
-    const userMsg: Message = { id: Date.now(), role: "user", content: query, time: timestamp(), traces: [], sources: null };
+    let displayContent = query;
+    let selectedFiles: string[] = [];
+
+    if (mode === "document") {
+      selectedFiles = documents.filter(d => d.selected && d.status === "completed").map(d => d.name);
+      if (selectedFiles.length > 0) {
+        displayContent = `[Files: ${selectedFiles.join(", ")}] ${query}`;
+      }
+    }
+
+    const userMsg: Message = { id: Date.now(), role: "user", content: displayContent, time: timestamp(), traces: [], sources: null };
     const assistantMsg: Message = { id: Date.now() + 1, role: "assistant", content: "", mode, time: timestamp(), traces: [], sources: null };
 
     setMessages((prev) => [...prev, userMsg, assistantMsg]);
@@ -500,11 +650,45 @@ export default function Home() {
     try {
       if (mode === "research") {
         await handleResearch(query, assistantMsg.id, backendIteration);
-      } else {
-        const res = await fetch(`${BASE_URL}${endpoint}`, {
+      } else if (mode === "document") {
+        const pdfServiceUrl = process.env.NEXT_PUBLIC_RAG_SERVER_URL || BASE_URL || "http://localhost:8000";
+        
+        const payload: any = { question: query };
+        if (selectedFiles.length === 1) {
+          payload.filename = selectedFiles[0];
+        }
+        // If multiple files are selected, we omit the 'filename' parameter
+        // to query across all files in the collection, preventing backend HTTP 500 crash.
+
+        const res = await fetch(`${pdfServiceUrl}/query`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ query, mode, iteration: backendIteration }),
+          body: JSON.stringify(payload),
+        });
+
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        
+        const uniqueSources = Array.from(new Set(
+          data.sourceDocuments
+            ?.map((doc: any) => doc.metadata?.source_filename)
+            .filter(Boolean)
+        )) as string[];
+
+        updateMessage(assistantMsg.id, { 
+          content: data.answer,
+          sources: uniqueSources.length > 0 ? uniqueSources : null
+        });
+      } else {
+        // mode === "chat"
+        const res = await fetch(`${BASE_URL}/chat`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ 
+            query, 
+            mode, 
+            iteration: backendIteration
+          }),
         });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
@@ -551,8 +735,6 @@ export default function Home() {
             const payload = JSON.parse(raw);
 
             if (currentEvent === "step") {
-              // Upsert trace: update existing entry for this step, or append new one.
-              // This fires repeatedly as lines stream in, updating content in-place.
               setMessages((prev) =>
                 prev.map((m) => {
                   if (m.id !== assistantId) return m;
@@ -568,7 +750,6 @@ export default function Home() {
               );
 
             } else if (currentEvent === "output_token") {
-              // Append single character to content — triggers character-by-character rendering
               setMessages((prev) =>
                 prev.map((m) =>
                   m.id === assistantId ? { ...m, content: m.content + (payload.char as string) } : m
@@ -643,7 +824,15 @@ export default function Home() {
 
         <div style={{ position: "relative", zIndex: 10 }}>
           {messages.length === 0 && (
-            <div style={{ position: "fixed", top: "32%", left: "50%", transform: "translateX(-50%)", textAlign: "center", pointerEvents: "none" }}>
+            <div style={{
+              position: "fixed",
+              top: "32%",
+              left: mode === "document" ? "calc(50% + 140px)" : "50%",
+              transform: "translateX(-50%)",
+              textAlign: "center",
+              pointerEvents: "none",
+              transition: "left 0.4s cubic-bezier(0.16, 1, 0.3, 1)"
+            }}>
               <div style={{ fontSize: 13, fontWeight: 500, color: "rgba(255,255,255,0.25)", letterSpacing: "0.5px", textTransform: "uppercase", marginBottom: 14 }}>
                 LangGraph AI
               </div>
@@ -657,8 +846,194 @@ export default function Home() {
             </div>
           )}
 
-          <ChatArea messages={messages} chatRef={chatRef} />
-          <TextBox onSend={sendChat} loading={loading} hasMessages={messages.length > 0} />
+          {/* Floating Glassmorphic Sidebar */}
+          <div style={{
+            position: "fixed",
+            top: "40px",
+            bottom: "40px",
+            left: mode === "document" ? "24px" : "-320px",
+            width: "280px",
+            zIndex: 30,
+            background: "rgba(255, 255, 255, 0.03)",
+            border: "1px solid rgba(255, 255, 255, 0.08)",
+            borderRadius: "20px",
+            backdropFilter: "blur(20px)",
+            boxShadow: "0 20px 40px rgba(0, 0, 0, 0.5)",
+            padding: "20px",
+            display: "flex",
+            flexDirection: "column",
+            transition: "all 0.4s cubic-bezier(0.16, 1, 0.3, 1)",
+            pointerEvents: mode === "document" ? "auto" : "none",
+          }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "18px" }}>
+              <span style={{ fontSize: "14px", fontWeight: 600, color: "rgba(255, 255, 255, 0.9)", display: "flex", alignItems: "center", gap: "8px" }}>
+                <span>📚</span> Document Library
+              </span>
+              {documents.length > 0 && (
+                <button 
+                  onClick={() => {
+                    if (confirm("Remove all documents from library?")) {
+                      setDocuments([]);
+                    }
+                  }}
+                  style={{
+                    background: "none", border: "none", color: "rgba(255, 77, 77, 0.75)", fontSize: "11px", cursor: "pointer"
+                  }}
+                >
+                  Clear All
+                </button>
+              )}
+            </div>
+
+            {documents.length > 0 && (
+              <div style={{ display: "flex", gap: 10, marginBottom: 14, fontSize: 11, borderBottom: "1px solid rgba(255,255,255,0.06)", paddingBottom: 10 }}>
+                <button 
+                  onClick={() => setDocuments(prev => prev.map(d => ({ ...d, selected: true })))}
+                  style={{ background: "none", border: "none", color: "rgba(255,255,255,0.5)", cursor: "pointer", padding: 0 }}
+                >
+                  Select All
+                </button>
+                <span style={{ color: "rgba(255,255,255,0.2)" }}>|</span>
+                <button 
+                  onClick={() => setDocuments(prev => prev.map(d => ({ ...d, selected: false })))}
+                  style={{ background: "none", border: "none", color: "rgba(255,255,255,0.5)", cursor: "pointer", padding: 0 }}
+                >
+                  Select None
+                </button>
+              </div>
+            )}
+
+            <div style={{ flex: 1, overflowY: "auto", display: "flex", flexDirection: "column", gap: "8px", paddingRight: "4px" }}>
+              {documents.length === 0 ? (
+                <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", textAlign: "center", padding: "20px", color: "rgba(255,255,255,0.25)" }}>
+                  <span style={{ fontSize: "28px", marginBottom: "10px" }}>📁</span>
+                  <span style={{ fontSize: "12px", fontWeight: 400 }}>No documents uploaded.</span>
+                  <span style={{ fontSize: "10px", marginTop: "4px", opacity: 0.7 }}>Upload a PDF to start querying.</span>
+                </div>
+              ) : (
+                documents.map((doc) => {
+                  const isSelected = doc.selected;
+                  return (
+                    <div 
+                      key={doc.name} 
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: "10px",
+                        padding: "10px 12px",
+                        borderRadius: "12px",
+                        background: isSelected ? "rgba(255, 255, 255, 0.05)" : "transparent",
+                        border: isSelected ? "1px solid rgba(255, 255, 255, 0.08)" : "1px solid transparent",
+                        transition: "all 0.2s ease",
+                      }}
+                    >
+                      <input 
+                        type="checkbox"
+                        checked={doc.selected}
+                        disabled={doc.status !== "completed"}
+                        onChange={() => {
+                          setDocuments(prev => prev.map(d => d.name === doc.name ? { ...d, selected: !d.selected } : d));
+                        }}
+                        style={{ cursor: doc.status === "completed" ? "pointer" : "default" }}
+                      />
+                      <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
+                        <span 
+                          title={doc.name}
+                          style={{
+                            fontSize: "12px",
+                            fontWeight: 500,
+                            color: isSelected ? "rgba(255,255,255,0.9)" : "rgba(255,255,255,0.6)",
+                            overflow: "hidden",
+                            textOverflow: "ellipsis",
+                            whiteSpace: "nowrap",
+                          }}
+                        >
+                          {doc.name}
+                        </span>
+                        <span style={{ fontSize: "10px", display: "flex", alignItems: "center", gap: "4px", marginTop: "2px" }}>
+                          {doc.status === "processing" && (
+                            <>
+                              <span style={{ width: "6px", height: "6px", borderRadius: "50%", background: "#e68c28", display: "inline-block", animation: "dotPulse 1.2s infinite" }} />
+                              <span style={{ color: "rgba(230, 140, 40, 0.7)" }}>Processing...</span>
+                            </>
+                          )}
+                          {doc.status === "completed" && (
+                            <>
+                              <span style={{ width: "6px", height: "6px", borderRadius: "50%", background: "#3cc878", display: "inline-block" }} />
+                              <span style={{ color: "rgba(60, 200, 120, 0.7)" }}>Ready</span>
+                            </>
+                          )}
+                          {doc.status === "failed" && (
+                            <>
+                              <span style={{ width: "6px", height: "6px", borderRadius: "50%", background: "#ff4d4d", display: "inline-block" }} />
+                              <span style={{ color: "rgba(255, 77, 77, 0.7)" }}>Failed</span>
+                            </>
+                          )}
+                        </span>
+                      </div>
+                      
+                      <button 
+                        onClick={() => {
+                          setDocuments(prev => prev.filter(d => d.name !== doc.name));
+                        }}
+                        style={{
+                          background: "none", border: "none", color: "rgba(255,255,255,0.25)", cursor: "pointer", fontSize: "12px", padding: "4px"
+                        }}
+                        onMouseEnter={e => e.currentTarget.style.color = "#ff4d4d"}
+                        onMouseLeave={e => e.currentTarget.style.color = "rgba(255,255,255,0.25)"}
+                      >
+                        🗑️
+                      </button>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+
+            <div style={{ marginTop: "16px" }}>
+              <label style={{
+                display: "flex",
+                flexDirection: "column",
+                alignItems: "center",
+                justifyContent: "center",
+                padding: "14px",
+                borderRadius: "14px",
+                border: "1px dashed rgba(255,255,255,0.15)",
+                background: "rgba(255,255,255,0.015)",
+                cursor: "pointer",
+                transition: "0.2s"
+              }}
+              onMouseEnter={e => e.currentTarget.style.borderColor = "rgba(255,255,255,0.3)"}
+              onMouseLeave={e => e.currentTarget.style.borderColor = "rgba(255,255,255,0.15)"}
+              >
+                <input type="file" accept=".pdf" hidden onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  if (file) onUpload(file);
+                }} />
+                {isUploading ? (
+                  <span style={{ width: 18, height: 18, border: "2px solid #555", borderTopColor: "#fff", borderRadius: "50%", animation: "spin 1s linear infinite" }} />
+                ) : (
+                  <>
+                    <span style={{ fontSize: "16px", marginBottom: "4px" }}>📤</span>
+                    <span style={{ fontSize: "11px", color: "rgba(255,255,255,0.4)" }}>Upload PDF Document</span>
+                  </>
+                )}
+              </label>
+            </div>
+          </div>
+
+          <ChatArea messages={messages} chatRef={chatRef} mode={mode} />
+          <TextBox 
+            onSend={sendChat} 
+            loading={loading} 
+            hasMessages={messages.length > 0} 
+            mode={mode}
+            onModeChange={setMode}
+            documents={documents}
+            onUpload={onUpload}
+            onToggleSelect={(name) => setDocuments(prev => prev.map(d => d.name === name ? { ...d, selected: !d.selected } : d))}
+            isUploading={isUploading}
+          />
         </div>
       </div>
     </>
